@@ -8,6 +8,7 @@
 #include <string.h>
 #include <ctime>
 #include <iomanip>
+#include <stdlib.h>
 
 double kl_divergence(double * p, double * q, int K)
 {
@@ -34,11 +35,8 @@ double js_divergence(double * p, double * q, int K)
 
 int sample(const int M, const int K, const double * prior_x, const int * phi, 
 			const int w, const int * lambda, const int * sum_lambda, const gsl_rng * r, 
-			const double ALPHA, const double BETA)
+			const double ALPHA, const double BETA, double * p, double * cum_p)
 {	
-	static double * p     = new double[K];
-	static double * cum_p = new double[K];
-	
 	double sum_p = 0;
 	for(int k = 0; k < K; k++)
 	{
@@ -209,7 +207,7 @@ void init(std::map<std::string, User *> &users, const int M, const int K,
 		for(std::map<int, std::list<int> *>::iterator iter2 = user->adoption.begin(); iter2 != user->adoption.end(); iter2++)
 		{
 			int t = iter2->first;
-			std::list<int> * adoption_t = user->adoption[t];
+			std::list<int> * adoption_t = iter2->second;
 
 			int adjusted_t = t - user->t_first;
 			int * Z_t = user->Z[adjusted_t];
@@ -232,13 +230,16 @@ void init(std::map<std::string, User *> &users, const int M, const int K,
 
 void gibbs_sampling(const int iterations, const bool record_logll, const bool estimate, const int M, const int K, 
 	const gsl_rng * r, const double ALPHA, const double BETA, std::map<std::string, User *> &users, 
-	int * lambda, int * sum_lambda, double * logll, double * logll_kl, double * time_elapsed, double learning_rate)
+	int * lambda, int * sum_lambda, double * logll, double * logll_kl, double * time_elapsed, const double learning_rate)
 {
+	
 	User * user;
-	static double * prior_x = new double[K];
-	static double * prior_dist = new double[K];
-	static double * posterior_dist = new double[K];
-
+	double * prior_x        = new double[K];
+	double * prior_dist     = new double[K];
+	double * posterior_dist = new double[K];
+	double * tmp_p = new double[K];
+	double * cum_p = new double[K];
+	
 	for(int i = 0; i < iterations; i++)
 	{
 		printf("\nIterations: %d/%d", i+1, iterations);
@@ -296,7 +297,7 @@ void gibbs_sampling(const int iterations, const bool record_logll, const bool es
 					lambda[k * M + w]--; //increment to the topic word distribution
 	 				sum_lambda[k]--; //the denominator
 					
-					k = sample(M, K, prior_x, phi_t, w, lambda, sum_lambda, r, ALPHA, BETA);
+					k = sample(M, K, prior_x, phi_t, w, lambda, sum_lambda, r, ALPHA, BETA, tmp_p, cum_p);
 
 	 				sum_lambda[k]++; //the denominator
 	 				lambda[k * M + w]++; //increment to the topic word distribution
@@ -315,7 +316,7 @@ void gibbs_sampling(const int iterations, const bool record_logll, const bool es
 			//learn dynamics here
 			if(Tn > 1 && estimate)
 			{
-				user->estimate_dynamics(K, ALPHA, learning_rate);
+				user->estimate_dynamics(K, ALPHA, learning_rate, tmp_p);
 			}
 
 			if(record_logll)
@@ -355,6 +356,12 @@ void gibbs_sampling(const int iterations, const bool record_logll, const bool es
 		printf(", logll: %f", logll[i]);
 	} //for(int i = 0; i < iterations; i++)
 	printf("\n");
+
+	delete [] cum_p;
+	delete [] tmp_p;
+	delete [] posterior_dist;
+	delete [] prior_dist;
+	delete [] prior_x;
 }
 
 void write_logll(const char * prefix, const int iterations, const double * logll, 
@@ -470,7 +477,7 @@ void write_users(const char * prefix, const int K, std::map<std::string, User *>
 	out_file.append("_users.txt");
 	std::ofstream out_stream(out_file.c_str());
 
-	static double * tmp = new double[K];
+	double * tmp = new double[K];
 
 	if(out_stream.is_open())
 	{
@@ -540,20 +547,20 @@ void write_users(const char * prefix, const int K, std::map<std::string, User *>
 			}
 			out_stream << "]" << std::endl;
 		}
+		out_stream.close();
 	}
 	else
 	{
 		std::cout << "Unable to open " << out_file << std::endl; 
 	}
+
+	delete [] tmp;
 }
 
 int main(int argc, char * argv[])
 {
-
-	//Things to do:
-	//1) Free the memory
-	//2) Make checks to ensure program is correct
-	//3) Output the results into file
+	//change it to read in from file instead of standard input
+	//use map points in users
 
 	int * lambda;
 	int * sum_lambda;
@@ -577,7 +584,8 @@ int main(int argc, char * argv[])
 	//print the arguments
 	std::cout << "Topics: " << K << ", Iterations: " << iterations << ", Initial Mu: " << mu 
 		<< ", Learning Rate: " << learning_rate << ", Record Logll: " << record_logll 
-		<< ", Estimate: " << estimate << ", single_A: " << single_A << ", single_Mu: " << single_mu << std::endl;
+		<< ", Estimate: " << estimate << ", single_A: " << single_A << ", single_Mu: " << single_mu 
+		<< ", Prefix: " << prefix << std::endl;
 
 	//Now read in the input file
 	//std::ifstream * file_ptr = new std::ifstream(input_file);
@@ -593,25 +601,33 @@ int main(int argc, char * argv[])
 	std::string n, line, tuple;
 	User * user;
 
-	while(std::cin.good())
+	//while(std::cin.good())
+	M = -1;
+	while(!std::cin.eof())
 	{
 		getline(std::cin, line);
+		//std::cout << line << std::endl;
+
+		if(line.length() < 1) break;
 
 		/* Open the line as a stream */
-		std::istringstream iss (line, std::istringstream::in);
+		std::istringstream iss(line, std::istringstream::in);
 		
 		/* Get first two values */
 		iss >> n >> t;
 		
-		if(users.find(n) == users.end())
+		std::map<std::string, User *>::iterator iter;
+		iter = users.find(n);
+
+		if(iter == users.end())
 		{
 			//create new user here
-			user = new User(single_A, single_mu);
+			user = new User(n, single_A, single_mu);
 			users[n] = user;
 		}
 		else
 		{
-			user = users[n];
+			user = iter->second;
 		}
 
 		while(iss.good())
@@ -622,22 +638,30 @@ int main(int argc, char * argv[])
 			int count = atoi(tuple.substr(pos+1).c_str());
 
 			if (m > M)
-				M = m;
-
-			for(int freq=0;freq<count;freq++)
 			{
-				//std::cout << t << ", " << m << std::endl;
-				user->add(t, m);
+				M = m;
+				// if(M > 100000)
+				// {
+				// 	std::cout << "error has occured " << M << std::endl;
+				// }
 			}
+
+			user->add(t, m, count);
 		}
+		// if(M > 100000)
+		// {
+		// 	std::cout << "error has occured again and again " << M << std::endl;
+		// }
 	}
 
 	N = users.size();
+	//std::cout << N << ", " << M << std::endl;
+	//std::cout.flush();
 
 	for(std::map<std::string, User *>::iterator iter = users.begin(); iter != users.end(); iter++)
 	{
 		iter->second->init_mu(K, mu);
-	}	
+	}
 
 	lambda = new int[M*K];
 	sum_lambda = new int[K];
@@ -651,30 +675,46 @@ int main(int argc, char * argv[])
 	//End of random generator
 
 	//initialize the gibbs sampler
+	std::cout << "Initialize Gibbs" << std::endl;
+	//std::cout.flush();
+
 	init(users, M, K, lambda, sum_lambda, r);
 
 	double ALPHA =  50.0 / K;
 	double BETA  = 200.0 / M;
 
 	//gibbs sampling inference
+	std::cout << "Gibbs Sampling" << std::endl;
+	//std::cout.flush();
+
 	gibbs_sampling(iterations, record_logll, estimate, M, K, r, ALPHA, BETA, users, 
 		lambda, sum_lambda, logll, logll_kl, time_elapsed, learning_rate);
 
 	//output the results
 
 	//output the settings
+	std::cout << "Writing settings file" << std::endl;
+	//std::cout.flush();
 	write_settings(prefix, M, N, K, iterations, mu, learning_rate, estimate, 
 		single_A, single_mu, record_logll);
 
+	std::cout << "Writing logll file" << std::endl;
+	//std::cout.flush();
 	//output the log likelihood
 	write_logll(prefix, iterations, logll, logll_kl, time_elapsed);
 
+	std::cout << "Writing topic file" << std::endl;
+	//std::cout.flush();
 	//output the topic file
 	write_topic(prefix, K, M, lambda, sum_lambda, BETA);
 
+	std::cout << "Writing users file" << std::endl;
+	//std::cout.flush();
 	//output the users
 	write_users(prefix, K, users, ALPHA, single_A, single_mu);
 	
+	std::cout << "Free memory" << std::endl;
+	//std::cout.flush();
 	//Free memory this is so important, omg....
 	gsl_rng_free(r);
 
@@ -688,10 +728,10 @@ int main(int argc, char * argv[])
 
 	if(record_logll)
 	{
-		delete[] time_elapsed;
-		delete[] logll_kl;
-		delete[] logll;
+		delete [] time_elapsed;
+		delete [] logll_kl;
+		delete [] logll;
 	}
-
+	
 	return 0;
 }

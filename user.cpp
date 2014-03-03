@@ -1,4 +1,91 @@
 #include "user.h"
+#include "linear_regression.h"
+
+double User::calculate_gc(User * tar, const int tau, const int width, const int lookahead,
+	double * tar_tseries, double * src_tseries)
+{
+	int tar_start = tau - width ;
+	int tar_end   = tau + lookahead ;
+
+	int src_start = tar_start ;
+	int src_end   = tar_end - 1 ;
+
+	if (tau + lookahead < tar->t_first || tau < t_first)
+    	return nan("");
+	else if (src_end > t_last)
+		return nan("");
+	else if(tar_end > tar->t_last)
+    	return nan("");
+
+	int midpoint = tar_start > tar->t_first ? tar_start : tar->t_first;
+	//double * tar_matrix = new double[(width+lookahead+1)*K];
+	//x = [zeros(K, midpoint - x_start) + 1/K, vectors{target_id}{midpoint:x_end}] ;
+
+	for(int t = tar_start; t < midpoint; t++)
+	{
+		int adjusted_t = t - tar_start;
+		for(int k = 0; k < tar->K; k++)
+		{
+			tar_tseries[adjusted_t * tar->K + k] = 1.0 / (tar->K);
+		}
+	}
+
+	for(int t = midpoint; t <= tar_end; t++)
+	{
+		int adjusted_t1 = t - tar_start;
+		int adjusted_t2 = t - tar->t_first;
+		for(int k = 0; k < tar->K; k++)
+		{
+			tar_tseries[adjusted_t1 * tar->K + k] = tar->posterior_x[adjusted_t2 * tar->K + k];
+		}
+	}
+	
+	midpoint = src_start > t_first ? src_start : t_first;
+	//y = [zeros(K, midpoint - y_start) + 1/K, vectors{source_id}{midpoint:y_end}] ;
+
+	for(int t = src_start; t < midpoint; t++)
+	{
+		int adjusted_t = t - src_start;
+		for(int k = 0; k < K; k++)
+		{
+			src_tseries[adjusted_t * K + k] = 1.0 / K;
+		}
+	}
+
+	for(int t = midpoint; t <= src_end; t++)
+	{
+		int adjusted_t1 = t - src_start;
+		int adjusted_t2 = t - t_first;
+		for(int k = 0; k < K; k++)
+		{
+			src_tseries[adjusted_t1 * K + k] = posterior_x[adjusted_t2 * K + k];
+		}
+	}
+	
+	return gc(src_tseries, K, width+lookahead, tar_tseries, tar->K, width+lookahead+1, width);
+}
+
+void User::calculate_gc(const int width, const int lookahead)
+{
+	if(Tn < 1) return;
+
+	double * tar_tseries = new double[(width+lookahead+1) * K];
+	double * src_tseries = new double[(width+lookahead+1) * K];
+	for(std::map<int, std::map<User *, int> *>::iterator iter = neighbors.begin(); iter != neighbors.end(); iter++)
+	{
+		int t = iter->first;
+		std::map<User *, int> * neighbors_t = iter->second;
+		std::map<User *, double> * neighbors_gc_t = neighbors_gc[t];
+		
+		for(std::map<User *, int>::iterator iter2 = neighbors_t->begin(); iter2 != neighbors_t->end(); iter2++)
+		{
+			User * tar = iter2->first;
+			(*neighbors_gc_t)[tar] = calculate_gc(tar, t, width, lookahead, src_tseries, tar_tseries);
+		}
+	}
+	delete [] src_tseries;
+	delete [] tar_tseries;
+}
 
 void User::init_mu(const int K, const double mu)
 {
@@ -13,12 +100,12 @@ void User::init_mu(const int K, const double mu)
 	}
 
 	phi = new int[Tn * K];
+	posterior_x = new double[Tn * K];
+
 	for(int i = 0; i < Tn * K; i++)
 	{
 		phi[i] = 0;
 	}
-
-	posterior_x = new double[Tn * K];
 
 	if(Tn > 1)
 	{
@@ -30,7 +117,7 @@ void User::init_mu(const int K, const double mu)
 		else if(!single_A && single_mu)
 		{
 			mu_t = new double [Tn - 1];
-			for(int t=0;t<Tn-1;t++)
+			for(int t = 0; t < Tn - 1; t++)
 			{
 				mu_t[t] = mu;
 			}
@@ -41,10 +128,10 @@ void User::init_mu(const int K, const double mu)
 		}
 		else
 		{
-			mu_t = new double[ (Tn-1) * K ] ; //the arrangement should be K x (Tn-1)
-			for(int t=0;t<Tn-1;t++)
+			mu_t = new double[ (Tn - 1) * K ] ; //the arrangement should be K x (Tn-1)
+			for(int t = 0; t < Tn - 1; t++)
 			{
-				for(int k=0;k<K;k++)
+				for(int k = 0; k < K; k++)
 				{
 					mu_t[t*K + k] = mu;
 				}
@@ -53,24 +140,77 @@ void User::init_mu(const int K, const double mu)
 	} //if(Tn > 1)
 }
 
-User::User(bool single_A, bool single_mu)
+User::User(std::string id)
 {
-	this->single_A  = single_A;
-	this->single_mu = single_mu;
-	
+	this->id = id;
 	t_first = -1;
 	t_last = -1;
 	Tn = 0;
 }
 
-void User::add(const int t, const int m)
+User::User(std::string id, const int t_first, const int t_last, double * posterior_x, const int K)
+{
+	this->id = id;
+	this->t_first = t_first;
+	this->t_last = t_last;
+	Tn = t_last - t_first + 1;
+	this->posterior_x = posterior_x;
+	this->K = K;
+}
+
+User::User(std::string id, const bool single_A, const bool single_mu)
+{
+	this->id = id;
+	t_first = -1;
+	t_last = -1;
+	Tn = 0;
+	this->single_A  = single_A;
+	this->single_mu = single_mu;
+}
+
+void User::add_social(const int t, User * tar, const int freq)
+{
+	std::map<User *, int> * neighbors_t;
+	std::map<int, std::map<User *, int> *>::iterator iter;
+	iter = neighbors.find(t);
+
+	if(iter == neighbors.end())
+	{
+		neighbors_t = new std::map<User *, int>();
+		neighbors[t] = neighbors_t;
+		neighbors_gc[t] = new std::map<User *, double>();
+	}
+	else
+	{
+		neighbors_t = iter->second;
+	}
+
+	std::map<User *, int>::iterator iter2;
+	iter2 = neighbors_t->find(tar);
+
+	if(iter2 == neighbors_t->end())
+	{
+		(*neighbors_t)[tar] = freq;
+	}
+	else
+	{
+		iter2->second += freq;
+	}
+}
+
+void User::add(const int t, const int m, const int freq)
 {
 	//int adjusted_index = t - t_first;
 	//std::cout << adjusted_index << std::endl;
 
-	if(adoption.find(t) == adoption.end())
+	std::list<int> * adoption_t;
+	std::map<int, std::list<int> *>::iterator iter;
+	iter = adoption.find(t);
+
+	if(iter == adoption.end())
 	{
-		adoption[t] = new std::list<int>();		
+		adoption_t = new std::list<int>();
+		adoption[t] = adoption_t;
 
 		if(t > t_last)
 		{
@@ -81,15 +221,22 @@ void User::add(const int t, const int m)
 		{
 			t_first = t;
 		}
-		
 	}
+	else
+	{
+		adoption_t = iter->second;
+	}
+
 	if(m < 1)
 	{
 		//throw an error
 		std::cout << "error occurred here, m must be greater than or equal to one." << std::endl;
 	}
 	
-	adoption[t]->push_back(m - 1);
+	for(int n=0;n<freq;n++)
+	{
+		adoption_t->push_back(m - 1);
+	}
 	//Z[t]->push_back(-1);
 }
 /*
@@ -280,7 +427,8 @@ double * User::get_decay_vector(const int t, const int K)
 	return &mu_t[t*K];
 }
 
-void User::estimate_dynamics(const int K, const double ALPHA, const double learning_rate)
+void User::estimate_dynamics(const int K, const double ALPHA, 
+	const double learning_rate, double * posterior_dist)
 {
 	//Estimate the decay parameter here
 	//First Calculate the Objective Function here.
@@ -298,8 +446,6 @@ void User::estimate_dynamics(const int K, const double ALPHA, const double learn
 	// 	L += kl_divergence(posterior_dist, prior_dist, K);
 	// }
 	// printf("n:%d, Before, L = %f\n", n, L);
-
-	static double * posterior_dist = new double[K];
 
 	double gradient = 0;
 	for(int t=1;t<Tn;t++)
